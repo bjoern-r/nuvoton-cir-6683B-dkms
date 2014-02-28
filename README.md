@@ -1,7 +1,7 @@
 this is a patched version of the nuvoton-cir driver to work with a newer version of the 
 Nuvoton superIO chip. The new chip called 6683B is identified by the PNP-ID NTN0533.
 
-TODO: currently the CIR-WAKe feature is NOT supportted!
+TODO: currently the CIR-WAKE feature is NOT supportted!
 
 INSTALL
 
