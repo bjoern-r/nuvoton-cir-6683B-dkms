@@ -1,0 +1,320 @@
+--- a/drivers/media/rc/nuvoton-cir.c	2015-01-21 23:01:52.003085736 +0100
++++ b/drivers/media/rc/nuvoton-cir.c	2014-08-17 17:05:31.710452439 +0200
+@@ -25,7 +25,6 @@
+  * USA
+  */
+ 
+-#undef pr_fmt
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+ 
+ #include <linux/kernel.h>
+@@ -230,6 +229,7 @@
+ {
+ 	unsigned long flags;
+ 	u8 chip_major, chip_minor;
++	int ret = 0;
+ 	char chip_id[12];
+ 	bool chip_unknown = false;
+ 
+@@ -264,6 +264,13 @@
+ 		if (chip_minor != CHIP_ID_LOW_677C)
+ 			chip_unknown = true;
+ 		break;
++	case CHIP_ID_HIGH_6683:
++		strcpy(chip_id, "ntc6683d-t\0");
++		if (chip_minor != CHIP_ID_LOW_6683A &&
++		    chip_minor != CHIP_ID_LOW_6683B)
++			chip_unknown = true;
++		nvt->disable_wake = 1;
++		break;
+ 	default:
+ 		strcpy(chip_id, "w836x7hg\0");
+ 		chip_unknown = true;
+@@ -285,7 +292,7 @@
+ 	nvt->chip_minor = chip_minor;
+ 	spin_unlock_irqrestore(&nvt->nvt_lock, flags);
+ 
+-	return 0;
++	return ret;
+ }
+ 
+ static void nvt_cir_ldev_init(struct nvt_dev *nvt)
+@@ -330,6 +337,9 @@
+ 	/* Enable CIR Wake via PSOUT# (Pin60) */
+ 	nvt_set_reg_bit(nvt, CIR_WAKE_ENABLE_BIT, CR_ACPI_CIR_WAKE);
+ 
++	/* enable cir interrupt of mouse/keyboard IRQ event */
++	nvt_set_reg_bit(nvt, CIR_INTR_MOUSE_IRQ_BIT, CR_ACPI_IRQ_EVENTS);
++
+ 	/* enable pme interrupt of cir wakeup event */
+ 	nvt_set_reg_bit(nvt, PME_INTR_CIR_PASS_BIT, CR_ACPI_IRQ_EVENTS2);
+ 
+@@ -453,6 +463,7 @@
+ 
+ 	nvt_select_logical_dev(nvt, LOGICAL_DEV_ACPI);
+ 	nvt_set_reg_bit(nvt, CIR_WAKE_ENABLE_BIT, CR_ACPI_CIR_WAKE);
++	nvt_set_reg_bit(nvt, CIR_INTR_MOUSE_IRQ_BIT, CR_ACPI_IRQ_EVENTS);
+ 	nvt_set_reg_bit(nvt, PME_INTR_CIR_PASS_BIT, CR_ACPI_IRQ_EVENTS2);
+ 
+ 	nvt_select_logical_dev(nvt, LOGICAL_DEV_CIR_WAKE);
+@@ -467,7 +478,6 @@
+ 	nvt_cir_wake_reg_write(nvt, 0xff, CIR_WAKE_IRSTS);
+ 	nvt_cir_wake_reg_write(nvt, 0, CIR_WAKE_IREN);
+ }
+-
+ #if 0 /* Currently unused */
+ /* rx carrier detect only works in learning mode, must be called w/nvt_lock */
+ static u32 nvt_rx_carrier_detect(struct nvt_dev *nvt)
+@@ -985,12 +995,6 @@
+ 		goto exit_free_dev_rdev;
+ 
+ 	ret = -ENODEV;
+-	/* activate pnp device */
+-	if (pnp_activate_dev(pdev) < 0) {
+-		dev_err(&pdev->dev, "Could not activate PNP device!\n");
+-		goto exit_free_dev_rdev;
+-	}
+-
+ 	/* validate pnp resources */
+ 	if (!pnp_port_valid(pdev, 0) ||
+ 	    pnp_port_len(pdev, 0) < CIR_IOREG_LENGTH) {
+@@ -1005,17 +1009,18 @@
+ 
+ 	if (!pnp_port_valid(pdev, 1) ||
+ 	    pnp_port_len(pdev, 1) < CIR_IOREG_LENGTH) {
+-		dev_err(&pdev->dev, "Wake PNP Port not valid!\n");
+-		goto exit_free_dev_rdev;
++		nvt->disable_wake = 1;
++		//dev_err(&pdev->dev, "Wake PNP Port not valid!\n");
++		//goto exit_free_dev_rdev;
+ 	}
+ 
+ 	nvt->cir_addr = pnp_port_start(pdev, 0);
+ 	nvt->cir_irq  = pnp_irq(pdev, 0);
+-
+-	nvt->cir_wake_addr = pnp_port_start(pdev, 1);
+-	/* irq is always shared between cir and cir wake */
+-	nvt->cir_wake_irq  = nvt->cir_irq;
+-
++	if (!nvt->disable_wake){
++		nvt->cir_wake_addr = pnp_port_start(pdev, 1);
++		/* irq is always shared between cir and cir wake */
++		nvt->cir_wake_irq  = nvt->cir_irq;
++	}
+ 	nvt->cr_efir = CR_EFIR;
+ 	nvt->cr_efdr = CR_EFDR;
+ 
+@@ -1034,22 +1039,24 @@
+ 	/* Initialize CIR & CIR Wake Logical Devices */
+ 	nvt_efm_enable(nvt);
+ 	nvt_cir_ldev_init(nvt);
+-	nvt_cir_wake_ldev_init(nvt);
++	if (!nvt->disable_wake)
++		nvt_cir_wake_ldev_init(nvt);
+ 	nvt_efm_disable(nvt);
+ 
+ 	/* Initialize CIR & CIR Wake Config Registers */
+ 	nvt_cir_regs_init(nvt);
+-	nvt_cir_wake_regs_init(nvt);
++	if (!nvt->disable_wake)
++		nvt_cir_wake_regs_init(nvt);
+ 
+ 	/* Set up the rc device */
+ 	rdev->priv = nvt;
+ 	rdev->driver_type = RC_DRIVER_IR_RAW;
+-	rdev->allowed_protocols = RC_BIT_ALL;
++	rdev->allowed_protos = RC_BIT_ALL;
+ 	rdev->open = nvt_open;
+ 	rdev->close = nvt_close;
+ 	rdev->tx_ir = nvt_tx_ir;
+ 	rdev->s_tx_carrier = nvt_set_tx_carrier;
+-	rdev->input_name = "Nuvoton w836x7hg Infrared Remote Transceiver";
++	rdev->input_name = "Nuvoton Infrared Remote Transceiver";
+ 	rdev->input_phys = "nuvoton/cir0";
+ 	rdev->input_id.bustype = BUS_HOST;
+ 	rdev->input_id.vendor = PCI_VENDOR_ID_WINBOND2;
+@@ -1082,27 +1089,29 @@
+ 	if (request_irq(nvt->cir_irq, nvt_cir_isr, IRQF_SHARED,
+ 			NVT_DRIVER_NAME, (void *)nvt))
+ 		goto exit_release_cir_addr;
++	if (!nvt->disable_wake){
++		if (!request_region(nvt->cir_wake_addr,
++				    CIR_IOREG_LENGTH, NVT_DRIVER_NAME))
++			goto exit_free_irq;
++
++		if (request_irq(nvt->cir_wake_irq, nvt_cir_wake_isr, IRQF_SHARED,
++				NVT_DRIVER_NAME, (void *)nvt))
++			goto exit_release_cir_wake_addr;
+ 
+-	if (!request_region(nvt->cir_wake_addr,
+-			    CIR_IOREG_LENGTH, NVT_DRIVER_NAME))
+-		goto exit_free_irq;
+-
+-	if (request_irq(nvt->cir_wake_irq, nvt_cir_wake_isr, IRQF_SHARED,
+-			NVT_DRIVER_NAME, (void *)nvt))
+-		goto exit_release_cir_wake_addr;
+-
+-	device_init_wakeup(&pdev->dev, true);
+-
++		device_init_wakeup(&pdev->dev, true);
++	}
+ 	nvt_pr(KERN_NOTICE, "driver has been successfully loaded\n");
+ 	if (debug) {
+ 		cir_dump_regs(nvt);
+-		cir_wake_dump_regs(nvt);
++		if (!nvt->disable_wake)
++			cir_wake_dump_regs(nvt);
+ 	}
+ 
+ 	return 0;
+ 
+ exit_release_cir_wake_addr:
+-	release_region(nvt->cir_wake_addr, CIR_IOREG_LENGTH);
++	if (!nvt->disable_wake)
++		release_region(nvt->cir_wake_addr, CIR_IOREG_LENGTH);
+ exit_free_irq:
+ 	free_irq(nvt->cir_irq, nvt);
+ exit_release_cir_addr:
+@@ -1127,14 +1136,17 @@
+ 	nvt_cir_reg_write(nvt, 0, CIR_IREN);
+ 	nvt_disable_cir(nvt);
+ 	/* enable CIR Wake (for IR power-on) */
+-	nvt_enable_wake(nvt);
++	if (!nvt->disable_wake)
++		nvt_enable_wake(nvt);
+ 	spin_unlock_irqrestore(&nvt->nvt_lock, flags);
+ 
+ 	/* free resources */
+ 	free_irq(nvt->cir_irq, nvt);
+-	free_irq(nvt->cir_wake_irq, nvt);
++	if (!nvt->disable_wake)
++		free_irq(nvt->cir_wake_irq, nvt);
+ 	release_region(nvt->cir_addr, CIR_IOREG_LENGTH);
+-	release_region(nvt->cir_wake_addr, CIR_IOREG_LENGTH);
++	if (!nvt->disable_wake)	
++		release_region(nvt->cir_wake_addr, CIR_IOREG_LENGTH);
+ 
+ 	rc_unregister_device(nvt->rdev);
+ 
+@@ -1170,13 +1182,15 @@
+ 	nvt_efm_disable(nvt);
+ 
+ 	/* make sure wake is enabled */
+-	nvt_enable_wake(nvt);
++	if (!nvt->disable_wake)
++		nvt_enable_wake(nvt);
+ 
+ 	return 0;
+ }
+ 
+ static int nvt_resume(struct pnp_dev *pdev)
+ {
++	int ret = 0;
+ 	struct nvt_dev *nvt = pnp_get_drvdata(pdev);
+ 
+ 	nvt_dbg("%s called", __func__);
+@@ -1192,20 +1206,23 @@
+ 	nvt_efm_disable(nvt);
+ 
+ 	nvt_cir_regs_init(nvt);
+-	nvt_cir_wake_regs_init(nvt);
++	if (!nvt->disable_wake)
++		nvt_cir_wake_regs_init(nvt);
+ 
+-	return 0;
++	return ret;
+ }
+ 
+ static void nvt_shutdown(struct pnp_dev *pdev)
+ {
+ 	struct nvt_dev *nvt = pnp_get_drvdata(pdev);
+-	nvt_enable_wake(nvt);
++	if (!nvt->disable_wake)
++		nvt_enable_wake(nvt);
+ }
+ 
+ static const struct pnp_device_id nvt_ids[] = {
+ 	{ "WEC0530", 0 },   /* CIR */
+ 	{ "NTN0530", 0 },   /* CIR for new chip's pnp id*/
++	{ "NTN0533", 0 },   /* CIR for 6683B chip, no CIR Wake */
+ 	{ "", 0 },
+ };
+ 
+@@ -1220,12 +1237,12 @@
+ 	.shutdown	= nvt_shutdown,
+ };
+ 
+-static int __init nvt_init(void)
++static int __init nvt_init(void)
+ {
+ 	return pnp_register_driver(&nvt_driver);
+ }
+ 
+-static void __exit nvt_exit(void)
++static void __init nvt_exit(void)
+ {
+ 	pnp_unregister_driver(&nvt_driver);
+ }
+@@ -1234,7 +1251,7 @@
+ MODULE_PARM_DESC(debug, "Enable debugging output");
+ 
+ MODULE_DEVICE_TABLE(pnp, nvt_ids);
+-MODULE_DESCRIPTION("Nuvoton W83667HG-A & W83677HG-I CIR driver");
++MODULE_DESCRIPTION("Nuvoton W83667HG-A & W83677HG-I & NCT6683 CIR driver");
+ 
+ MODULE_AUTHOR("Jarod Wilson <jarod@redhat.com>");
+ MODULE_LICENSE("GPL");
+--- a/drivers/media/rc/nuvoton-cir.h	2014-07-26 19:44:52.000000000 +0200
++++ b/drivers/media/rc/nuvoton-cir.h	2014-08-17 17:05:31.710452439 +0200
+@@ -34,7 +34,6 @@
+ /* debugging module parameter */
+ static int debug;
+ 
+-
+ #define nvt_pr(level, text, ...) \
+ 	printk(level KBUILD_MODNAME ": " text, ## __VA_ARGS__)
+ 
+@@ -84,9 +83,10 @@
+ 	} tx;
+ 
+ 	/* EFER Config register index/data pair */
+-	u32 cr_efir;
+-	u32 cr_efdr;
+-
++	u8 cr_efir;
++	u8 cr_efdr;
++	/* don't use CIR wake device */
++	int disable_wake;
+ 	/* hardware I/O settings */
+ 	unsigned long cir_addr;
+ 	unsigned long cir_wake_addr;
+@@ -143,6 +143,7 @@
+ 
+ /* total length of CIR and CIR WAKE */
+ #define CIR_IOREG_LENGTH	0x0f
++#define CIR_IOREG_LENGTH_B	0x04
+ 
+ /* RX limit length, 8 high bits for SLCH, 8 low bits for SLCL (0x7d0 = 2000) */
+ #define CIR_RX_LIMIT_COUNT	0x7d0
+@@ -330,10 +331,13 @@
+ #define CHIP_ID_HIGH_667	0xa5
+ #define CHIP_ID_HIGH_677B	0xb4
+ #define CHIP_ID_HIGH_677C	0xc3
++#define CHIP_ID_HIGH_6683	0xc7 //bri
+ #define CHIP_ID_LOW_667		0x13
+ #define CHIP_ID_LOW_677B2	0x72
+ #define CHIP_ID_LOW_677B3	0x73
+ #define CHIP_ID_LOW_677C	0x33
++#define CHIP_ID_LOW_6683A	0x31 //bri
++#define CHIP_ID_LOW_6683B	0x32 //bri
+ 
+ /* Config regs we need to care about */
+ #define CR_SOFTWARE_RESET	0x02
+@@ -363,6 +367,7 @@
+ #define LOGICAL_DEV_ENABLE	0x01
+ 
+ #define CIR_WAKE_ENABLE_BIT	0x08
++#define CIR_INTR_MOUSE_IRQ_BIT	0x80
+ #define PME_INTR_CIR_PASS_BIT	0x08
+ 
+ /* w83677hg CIR pin config */
